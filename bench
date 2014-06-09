@@ -1,13 +1,24 @@
 #!/usr/bin/env bash
 
-echo "starting server"
-python server.py $@ &
+if [ "$1" = "-p" ]; then
+  PROF=1
+  shift
+fi
+
+python server.py $1 &
 SERVER=$(echo $!)
-echo "server is at $SERVER"
 sleep 1
-echo "starting ab"
+
+if [ -n "$PROF" ]; then
+  kill -TTIN $SERVER
+fi
+
 ab -n100000 -c100 127.0.0.1:8000/
-echo "killing server"
+
+if [ -n "$PROF" ]; then
+  kill -TTOU $SERVER
+  sleep 1
+fi
+
 kill -HUP $SERVER
 wait $SERVER
-echo "done"

@@ -25,15 +25,30 @@ if not ispypy:
 import vanilla
 
 class GoAway(Exception): pass
+prof = None
 
-def sighandle(signum, frame):
-    # main greenlet is always the root of the parent tree
+def hup(signum, frame):
     main = greenlet.getcurrent()
     while main.parent:
         main = main.parent
     main.throw(GoAway())
 
-signal.signal(signal.SIGHUP, sighandle)
+def ttin(signum, frame):
+    global prof
+    prof = cProfile.Profile()
+    prof.enable()
+
+def ttou(signum, frame):
+    global prof
+    if prof is None:
+        return
+    prof.disable()
+    prof.print_stats('tottime')
+    prof = None
+
+signal.signal(signal.SIGHUP, hup)
+signal.signal(signal.SIGTTIN, ttin)
+signal.signal(signal.SIGTTOU, ttou)
 
 if not ispypy:
     def puffin_serve():
@@ -42,13 +57,18 @@ if not ispypy:
         servsock.bind(("127.0.0.1", 8000))
         servsock.listen(socket.SOMAXCONN)
 
-        while 1:
-            try:
-                client, addr = servsock.accept()
-            except GoAway:
-                return
-            puffin.schedule(puffin_handler, (client,))
-            del client
+        try:
+            while 1:
+                try:
+                    client, addr = servsock.accept()
+                except EnvironmentError, exc:
+                    if exc.args[0] != errno.EINTR:
+                        raise
+                    continue
+                puffin.schedule(puffin_handler, (client,))
+                del client
+        except GoAway:
+            pass
 
     def puffin_handler(sock):
         recv_request(sock)
@@ -56,17 +76,18 @@ if not ispypy:
 
 
 def greenhouse_serve():
+    greenhouse.set_ignore_interrupts(1)
     servsock = greenhouse.Socket()
     servsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     servsock.bind(("127.0.0.1", 8000))
     servsock.listen(socket.SOMAXCONN)
 
-    while 1:
-        try:
+    try:
+        while 1:
             client, addr = servsock.accept()
-        except GoAway:
-            return
-        greenhouse.schedule(greenhouse_handler, (client,))
+            greenhouse.schedule(greenhouse_handler, (client,))
+    except GoAway:
+        pass
 
 def greenhouse_handler(sock):
     recv_request(sock)
@@ -81,13 +102,13 @@ if not ispypy:
         servsock.bind(("127.0.0.1", 8000))
         servsock.listen(socket.SOMAXCONN)
 
-        while 1:
-            try:
+        try:
+            while 1:
                 client, addr = servsock.accept()
-            except GoAway:
-                return
-            gevent.spawn(gevent_handler, client)
-            del client
+                gevent.spawn(gevent_handler, client)
+                del client
+        except GoAway:
+            pass
 
     def gevent_handler(sock):
         recv_request(sock)
@@ -105,14 +126,14 @@ def vanilla_serve():
     events = hub.register(listen.fileno(),
             select.EPOLLIN|select.EPOLLHUP|select.EPOLLERR)
 
-    while 1:
-        try:
+    try:
+        while 1:
             events.recv()
-        except GoAway:
-            return
-        conn, addr = listen.accept()
-        hub.spawn(vanilla_handler, conn, hub)
-        del conn
+            conn, addr = listen.accept()
+            hub.spawn(vanilla_handler, conn, hub)
+            del conn
+    except GoAway:
+        return
 
 def vanilla_handler(conn, hub):
     cfd = conn.fileno()
@@ -159,35 +180,16 @@ def recv_request(sock):
             return True
 
 
-def arguments(argv):
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-p", "--profile", action="store_true", default=False)
-    parser.add_argument("scheduler")
-    return parser.parse_args(argv)
-
-
 def main(env, argv):
-    args = arguments(argv[1:])
-
-    if args.profile:
-        prof = cProfile.Profile()
-        prof.enable()
-
-    print "args.scheduler:", args.scheduler
-    try:
-        if args.scheduler == 'vanilla':
-            vanilla_serve()
-        elif args.scheduler == 'greenhouse':
-            greenhouse_serve()
-        elif not ispypy:
-            if args.scheduler == 'gevent':
-                gevent_serve()
-            elif args.scheduler == 'puffin':
-                puffin_serve()
-    finally:
-        if args.profile:
-            prof.disable()
-            prof.print_stats('cumulative')
+    if argv[1] == 'vanilla':
+        vanilla_serve()
+    elif argv[1] == 'greenhouse':
+        greenhouse_serve()
+    elif not ispypy:
+        if argv[1] == 'gevent':
+            gevent_serve()
+        elif argv[1] == 'puffin':
+            puffin_serve()
 
     return 0
 
