@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+echo "starting server"
+python server.py $@ &
+SERVER=$(echo $!)
+echo "server is at $SERVER"
+sleep 1
+echo "starting ab"
+ab -n100000 -c100 127.0.0.1:8000/
+echo "killing server"
+kill -HUP $SERVER
+wait $SERVER
+echo "done"

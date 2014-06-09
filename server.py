@@ -1,9 +1,13 @@
 #!/usr/bin/env python
 # vim: fileencoding=utf8:et:sw=4:ts=8:sts=4
 
+import argparse
+import cProfile
 import errno
+import greenlet
 import os
 import select
+import signal
 import socket
 import sys
 
@@ -20,6 +24,16 @@ if not ispypy:
 
 import vanilla
 
+class GoAway(Exception): pass
+
+def sighandle(signum, frame):
+    # main greenlet is always the root of the parent tree
+    main = greenlet.getcurrent()
+    while main.parent:
+        main = main.parent
+    main.throw(GoAway())
+
+signal.signal(signal.SIGHUP, sighandle)
 
 if not ispypy:
     def puffin_serve():
@@ -29,7 +43,10 @@ if not ispypy:
         servsock.listen(socket.SOMAXCONN)
 
         while 1:
-            client, addr = servsock.accept()
+            try:
+                client, addr = servsock.accept()
+            except GoAway:
+                return
             puffin.schedule(puffin_handler, (client,))
             del client
 
@@ -45,7 +62,10 @@ def greenhouse_serve():
     servsock.listen(socket.SOMAXCONN)
 
     while 1:
-        client, addr = servsock.accept()
+        try:
+            client, addr = servsock.accept()
+        except GoAway:
+            return
         greenhouse.schedule(greenhouse_handler, (client,))
 
 def greenhouse_handler(sock):
@@ -62,7 +82,10 @@ if not ispypy:
         servsock.listen(socket.SOMAXCONN)
 
         while 1:
-            client, addr = servsock.accept()
+            try:
+                client, addr = servsock.accept()
+            except GoAway:
+                return
             gevent.spawn(gevent_handler, client)
             del client
 
@@ -83,7 +106,10 @@ def vanilla_serve():
             select.EPOLLIN|select.EPOLLHUP|select.EPOLLERR)
 
     while 1:
-        events.recv()
+        try:
+            events.recv()
+        except GoAway:
+            return
         conn, addr = listen.accept()
         hub.spawn(vanilla_handler, conn, hub)
         del conn
@@ -133,16 +159,36 @@ def recv_request(sock):
             return True
 
 
+def arguments(argv):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-p", "--profile", action="store_true", default=False)
+    parser.add_argument("scheduler")
+    return parser.parse_args(argv)
+
+
 def main(env, argv):
-    if argv[1] == 'vanilla':
-        vanilla_serve()
-    elif argv[1] == 'greenhouse':
-        greenhouse_serve()
-    elif not ispypy:
-        if argv[1] == 'gevent':
-            gevent_serve()
-        elif argv[1] == 'puffin':
-            puffin_serve()
+    args = arguments(argv[1:])
+
+    if args.profile:
+        prof = cProfile.Profile()
+        prof.enable()
+
+    print "args.scheduler:", args.scheduler
+    try:
+        if args.scheduler == 'vanilla':
+            vanilla_serve()
+        elif args.scheduler == 'greenhouse':
+            greenhouse_serve()
+        elif not ispypy:
+            if args.scheduler == 'gevent':
+                gevent_serve()
+            elif args.scheduler == 'puffin':
+                puffin_serve()
+    finally:
+        if args.profile:
+            prof.disable()
+            prof.print_stats('cumulative')
+
     return 0
 
 
